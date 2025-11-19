@@ -7,5 +7,5 @@
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["tests/**/*.ts", "scripts/**/*.ts"]
+  "include": ["programs/tipcoin/tests/**/*.ts", "scripts/**/*.ts"]
 }

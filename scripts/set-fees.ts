@@ -2,8 +2,8 @@ import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
 import { PublicKey } from '@solana/web3.js';
 
-import idl from '../../../target/idl/tipcoin.json' with { type: 'json' };
-import { Tipcoin } from '../../../target/types/tipcoin.ts';
+import idl from '../target/idl/tipcoin.json' with { type: 'json' };
+import { Tipcoin } from '../target/types/tipcoin.ts';
 
 async function main() {
   const provider = anchor.AnchorProvider.env();

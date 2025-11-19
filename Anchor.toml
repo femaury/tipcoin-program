@@ -1,0 +1,18 @@
+[features]
+seeds = true
+
+[programs.localnet]
+tipcoin = "4E9E74RpVCrtJXt7uaMYxVU1VG2yJBdvDYctGVcYRpGY"
+
+[programs.devnet]
+tipcoin = "4E9E74RpVCrtJXt7uaMYxVU1VG2yJBdvDYctGVcYRpGY"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "localnet"
+wallet = "/Users/wareep/ItsACoin/solana/wallets/operator.json"
+
+[scripts]
+test = "pnpm run test:local"
