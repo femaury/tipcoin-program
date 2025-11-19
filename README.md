@@ -20,13 +20,13 @@ relayer, and settle everything on-chain with auditable events.
 ## Repository layout
 
 ```
-Anchor.toml            Anchor workspace definition
-Cargo.toml             Rust workspace (Tipcoin program member)
-idl/                   Checked-in IDL snapshots (kept in sync with target/idl)
-programs/tipcoin/      Rust program sources
-scripts/               TS helpers (init config, update fees, etc.)
-tests/                 Anchor/Mocha tests (`pnpm run test:local`)
-tsconfig.json          Shared TypeScript config for scripts/tests
+Anchor.toml                 Anchor workspace definition
+Cargo.toml                  Workspace that declares `programs/tipcoin`
+programs/tipcoin/src/       Rust program sources
+programs/tipcoin/tests/     Mocha e2e suite (runs via `pnpm run test:local`)
+scripts/                    TS helpers (init config, update fees, etc.)
+tsconfig.json               Shared TypeScript config for scripts/tests
+target/idl|types/           Generated artifacts after `anchor build`
 ```
 
 ## Prerequisites
@@ -47,13 +47,10 @@ anchor build           # compiles the program, emits IDL + types
 ```
 
 `anchor build` writes artifacts to `target/idl/tipcoin.json`,
-`target/types/tipcoin.ts`, and `target/deploy/tipcoin.so`. Copy the IDL into the
-committed `idl/` directory whenever you publish a new release:
-
-```bash
-cp target/idl/tipcoin.json idl/tipcoin.json
-cp target/types/tipcoin.ts idl/tipcoin.ts        # optional helper types
-```
+`target/types/tipcoin.ts`, and `target/deploy/tipcoin.so`. Downstream projects
+(for example `apps/indexer`) import the IDL via the `#tipcoin-idl` alias, so make
+sure the generated files stay current. If you need to ship a pinned snapshot,
+copy the output into a release bundle or publish it as an npm package.
 
 ## Running tests
 
@@ -61,7 +58,7 @@ The suite spins up a local validator via Anchor and runs through the full user
 journey.
 
 ```bash
-pnpm run test:local    # uses Anchor.toml provider settings
+pnpm run test:local    # runs programs/tipcoin/tests/tipcoin.ts
 ```
 
 Override the wallet or cluster by exporting `ANCHOR_WALLET` /
@@ -105,14 +102,16 @@ diff-checking `target/idl` against the committed `idl/` directory.
   logs from fee withdrawals & admin actions. Downstream services should listen
   for these events rather than parsing instructions manually.
 
-## Scripts
+## Scripts & downstream usage
 
 - `scripts/init-config.ts` – initializes the config PDA with relayer, mint, and
   fee settings.
 - `scripts/set-fees.ts` – upgrades fee bps post-deployment.
 
 Both require `ANCHOR_CONFIG` or CLI flags pointing at the correct cluster and
-keypair; see the script sources for argument details.
+keypair; see the script sources for argument details. After each build,
+downstream services can read the fresh IDL/types from `target/idl` and
+`target/types` via the shared alias (`#tipcoin-idl` / `#tipcoin-types`).
 
 ## Contributing
 
