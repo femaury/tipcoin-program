@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node", "mocha"],
+    "module": "NodeNext",
+    "target": "ES2022",
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["tests/**/*.ts", "scripts/**/*.ts"]
+}

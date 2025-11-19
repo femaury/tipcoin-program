@@ -1,0 +1,21 @@
+{
+  "name": "@tipbot/tipcoin-program",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:local": "cross-env ANCHOR_CONFIG=../../Anchor.toml mocha --extension ts --timeout 600000 -r ts-node/register/transpile-only tests/tipcoin.ts"
+  },
+  "dependencies": {
+    "bn.js": "^5.2.0",
+    "@coral-xyz/anchor": "^0.32.1"
+  },
+  "devDependencies": {
+    "@types/bn.js": "^5.2.0",
+    "cross-env": "^7.0.3",
+    "@types/mocha": "^10.0.8",
+    "mocha": "^10.4.0",
+    "@solana/web3.js": "^1.98.4",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}
