@@ -301,10 +301,6 @@ pub mod tipcoin {
         Ok(())
     }
 
-    pub fn rain(_ctx: Context<Rain>, _amounts: Vec<u64>, _tip_id: [u8; 32]) -> Result<()> {
-        Ok(())
-    }
-
     pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
         require!(amount > 0, TipError::InvalidWithdrawAmount);
 
@@ -572,19 +568,6 @@ pub struct Tip<'info> {
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
-}
-
-#[derive(Accounts)]
-pub struct Rain<'info> {
-    #[account(mut, seeds = [b"config"], bump)]
-    pub config: Account<'info, Config>,
-    pub relayer: Signer<'info>,
-    #[account(
-        mut,
-        seeds = [b"vault", operator_vault.hashed_discord_id.as_ref()],
-        bump
-    )]
-    pub operator_vault: Account<'info, Vault>,
 }
 
 #[derive(Accounts)]
