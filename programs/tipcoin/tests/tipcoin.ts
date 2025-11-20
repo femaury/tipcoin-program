@@ -185,15 +185,15 @@ describe('tipcoin program', () => {
     assert.strictEqual(configAccount.feeBps, feeBps);
 
     const hashedDiscordSeed = `test-user-${Date.now()}-${Math.random()}`;
-    const hashedDiscordId = createHash('sha256').update(hashedDiscordSeed).digest();
-    const hashedDiscordArray = Array.from(hashedDiscordId);
+    const hashedUserId = createHash('sha256').update(hashedDiscordSeed).digest();
+    const hashedDiscordArray = Array.from(hashedUserId);
 
     const [vaultPda] = PublicKey.findProgramAddressSync(
-      [Buffer.from('vault'), hashedDiscordId],
+      [Buffer.from('vault'), hashedUserId],
       program.programId,
     );
     const [allowancePda] = PublicKey.findProgramAddressSync(
-      [Buffer.from('allowance'), hashedDiscordId],
+      [Buffer.from('allowance'), hashedUserId],
       program.programId,
     );
 
@@ -256,15 +256,15 @@ describe('tipcoin program', () => {
     const matchingEvent = depositEvents
       .map(
         (record) =>
-          record.event as unknown as { vault: PublicKey; amount: BN; hashedDiscordId: number[] },
+          record.event as unknown as { vault: PublicKey; amount: BN; hashedUserId: number[] },
       )
       .find((event) => event.vault.equals(vaultPda));
 
     assert.ok(matchingEvent, 'DepositEvent not emitted');
     assert.strictEqual(matchingEvent!.amount.toString(), depositAmount.toString());
     assert.deepStrictEqual(
-      matchingEvent!.hashedDiscordId,
-      Array.from(hashedDiscordId),
+      matchingEvent!.hashedUserId,
+      Array.from(hashedUserId),
       'Event hashed discord id mismatch',
     );
 
@@ -405,7 +405,7 @@ describe('tipcoin program', () => {
 
     const recipientVaultAccount = await program.account.vault.fetch(recipientVaultPda);
     assert.deepStrictEqual(
-      recipientVaultAccount.hashedDiscordId,
+      recipientVaultAccount.hashedUserId,
       Array.from(recipientHashedId),
       'Recipient vault hashed discord id mismatch after tip',
     );

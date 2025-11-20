@@ -1,7 +1,10 @@
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::bpf_loader_upgradeable::{self, UpgradeableLoaderState};
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
+use bincode::deserialize;
 
 const MAX_FEE_BPS: u16 = 100;
+const UNCLAIMED_AUTHORITY_SEED: &[u8] = b"unclaimed_authority";
 
 declare_id!("4E9E74RpVCrtJXt7uaMYxVU1VG2yJBdvDYctGVcYRpGY");
 
@@ -13,14 +16,22 @@ pub mod tipcoin {
         ctx: Context<InitializeConfig>,
         args: InitializeConfigArgs,
     ) -> Result<()> {
-        require!(args.relayer != Pubkey::default(), TipError::InvalidRelayer);
+        assert_is_program_upgrade_authority(
+            &ctx.accounts.program,
+            &ctx.accounts.program_data,
+            &ctx.accounts.upgrade_authority,
+        )?;
 
+        require!(args.relayer != Pubkey::default(), TipError::InvalidRelayer);
         require!(
             args.token_mint != Pubkey::default(),
             TipError::InvalidTokenMint
         );
-
         require!(args.fee_bps <= MAX_FEE_BPS, TipError::InvalidFeeBps);
+        require!(
+            args.claim_authority != Pubkey::default(),
+            TipError::InvalidClaimAuthority
+        );
 
         let config = &mut ctx.accounts.config;
 
@@ -28,29 +39,78 @@ pub mod tipcoin {
         config.relayer = args.relayer;
         config.token_mint = args.token_mint;
         config.fee_bps = args.fee_bps;
+        config.claim_authority = args.claim_authority;
 
         Ok(())
     }
 
-    pub fn register(ctx: Context<Register>, hashed_discord_id: [u8; 32]) -> Result<()> {
+    pub fn claim_vault(ctx: Context<ClaimVault>, hashed_user_id: [u8; 32]) -> Result<()> {
         require!(
-            hashed_discord_id.iter().any(|byte| *byte != 0),
-            TipError::InvalidHashedDiscordId
+            hashed_user_id.iter().any(|byte| *byte != 0),
+            TipError::InvalidHashedUserId
+        );
+
+        require_keys_eq!(
+            ctx.accounts.claim_authority.key(),
+            ctx.accounts.config.claim_authority,
+            TipError::InvalidClaimAuthority
         );
 
         let authority_key = ctx.accounts.authority.key();
         let config_mint = ctx.accounts.config.token_mint;
+        let unclaimed_authority = unclaimed_authority_key(ctx.program_id);
 
         let vault = &mut ctx.accounts.vault;
-        vault.authority = authority_key;
-        vault.hashed_discord_id = hashed_discord_id;
-        vault.token_mint = config_mint;
-
         let allowance = &mut ctx.accounts.allowance;
+
+        if vault.hashed_user_id != [0u8; 32] {
+            require!(
+                vault.hashed_user_id == hashed_user_id,
+                TipError::InvalidHashedUserId
+            );
+        } else {
+            vault.hashed_user_id = hashed_user_id;
+        }
+
+        if vault.token_mint == Pubkey::default() {
+            vault.token_mint = config_mint;
+        } else {
+            require_keys_eq!(vault.token_mint, config_mint, TipError::InvalidTokenMint);
+        }
+
+        if vault.claimed {
+            require_keys_eq!(
+                vault.authority,
+                authority_key,
+                TipError::InvalidVaultAuthority
+            );
+        } else {
+            require!(
+                vault.authority == Pubkey::default() || vault.authority == unclaimed_authority,
+                TipError::VaultAlreadyClaimed
+            );
+            vault.authority = authority_key;
+            vault.claimed = true;
+        }
+
+        if allowance.hashed_user_id != [0u8; 32] {
+            require!(
+                allowance.hashed_user_id == hashed_user_id,
+                TipError::InvalidAllowancePda
+            );
+        } else {
+            allowance.hashed_user_id = hashed_user_id;
+        }
         allowance.authority = authority_key;
-        allowance.hashed_discord_id = hashed_discord_id;
         allowance.cap = 0;
         allowance.remaining = 0;
+
+        emit!(VaultClaimed {
+            authority: authority_key,
+            claim_authority: ctx.accounts.claim_authority.key(),
+            vault: vault.key(),
+            hashed_user_id,
+        });
 
         Ok(())
     }
@@ -79,7 +139,7 @@ pub mod tipcoin {
             authority: ctx.accounts.authority.key(),
             vault: ctx.accounts.vault.key(),
             vault_bump,
-            hashed_discord_id: ctx.accounts.vault.hashed_discord_id,
+            hashed_user_id: ctx.accounts.vault.hashed_user_id,
             amount,
         });
 
@@ -93,7 +153,7 @@ pub mod tipcoin {
         allowance.remaining = amount;
 
         let (vault, vault_bump) = Pubkey::find_program_address(
-            &[b"vault", allowance.hashed_discord_id.as_ref()],
+            &[b"vault", allowance.hashed_user_id.as_ref()],
             ctx.program_id,
         );
 
@@ -101,7 +161,7 @@ pub mod tipcoin {
             authority: allowance.authority,
             vault,
             vault_bump,
-            hashed_discord_id: allowance.hashed_discord_id,
+            hashed_user_id: allowance.hashed_user_id,
             cap: allowance.cap,
             remaining: allowance.remaining,
         });
@@ -115,7 +175,7 @@ pub mod tipcoin {
         allowance.remaining = 0;
 
         let (vault, vault_bump) = Pubkey::find_program_address(
-            &[b"vault", allowance.hashed_discord_id.as_ref()],
+            &[b"vault", allowance.hashed_user_id.as_ref()],
             ctx.program_id,
         );
 
@@ -123,7 +183,7 @@ pub mod tipcoin {
             authority: allowance.authority,
             vault,
             vault_bump,
-            hashed_discord_id: allowance.hashed_discord_id,
+            hashed_user_id: allowance.hashed_user_id,
             cap: allowance.cap,
             remaining: allowance.remaining,
         });
@@ -135,8 +195,9 @@ pub mod tipcoin {
         ctx: Context<Tip>,
         amount: u64,
         tip_id: [u8; 32],
+        sender_nonce: u64,
         memo: Option<String>,
-        recipient_hashed_discord_id: [u8; 32],
+        recipient_hashed_user_id: [u8; 32],
     ) -> Result<()> {
         require!(amount > 0, TipError::InvalidTipAmount);
         require_keys_eq!(
@@ -145,8 +206,8 @@ pub mod tipcoin {
             TipError::InvalidRelayer
         );
         require!(
-            recipient_hashed_discord_id.iter().any(|byte| *byte != 0),
-            TipError::InvalidHashedDiscordId
+            recipient_hashed_user_id.iter().any(|byte| *byte != 0),
+            TipError::InvalidHashedUserId
         );
 
         let config_token_mint = ctx.accounts.config.token_mint;
@@ -154,6 +215,7 @@ pub mod tipcoin {
         let sender_allowance = &mut ctx.accounts.sender_allowance;
         let recipient_vault = &mut ctx.accounts.recipient_vault;
         let fee_vault = &mut ctx.accounts.fee_vault;
+        let unclaimed_authority = unclaimed_authority_key(ctx.program_id);
 
         require_keys_eq!(
             sender_vault.token_mint,
@@ -168,19 +230,20 @@ pub mod tipcoin {
         );
 
         require!(
-            sender_vault.hashed_discord_id == sender_allowance.hashed_discord_id,
+            sender_vault.hashed_user_id == sender_allowance.hashed_user_id,
             TipError::InvalidSenderPda
         );
 
-        if recipient_vault.hashed_discord_id == [0u8; 32]
+        if recipient_vault.hashed_user_id == [0u8; 32]
             && recipient_vault.token_mint == Pubkey::default()
         {
-            recipient_vault.authority = Pubkey::default();
-            recipient_vault.hashed_discord_id = recipient_hashed_discord_id;
+            recipient_vault.authority = unclaimed_authority;
+            recipient_vault.hashed_user_id = recipient_hashed_user_id;
             recipient_vault.token_mint = config_token_mint;
+            recipient_vault.claimed = false;
         } else {
             require!(
-                recipient_vault.hashed_discord_id == recipient_hashed_discord_id,
+                recipient_vault.hashed_user_id == recipient_hashed_user_id,
                 TipError::InvalidRecipientPda
             );
             require_keys_eq!(
@@ -190,8 +253,16 @@ pub mod tipcoin {
             );
         }
 
-        let sender_hash = sender_vault.hashed_discord_id;
-        let recipient_hash = recipient_vault.hashed_discord_id;
+        if !recipient_vault.claimed {
+            require_keys_eq!(
+                recipient_vault.authority,
+                unclaimed_authority,
+                TipError::InvalidRecipientPda
+            );
+        }
+
+        let sender_hash = sender_vault.hashed_user_id;
+        let recipient_hash = recipient_vault.hashed_user_id;
 
         let (expected_sender_vault, sender_vault_bump) =
             Pubkey::find_program_address(&[b"vault", sender_hash.as_ref()], ctx.program_id);
@@ -284,9 +355,10 @@ pub mod tipcoin {
             sender_vault_bump,
             recipient_vault: recipient_vault.key(),
             recipient_vault_bump,
-            sender_hashed_discord_id: sender_hash,
-            recipient_hashed_discord_id: recipient_hash,
+            sender_hashed_user_id: sender_hash,
+            recipient_hashed_user_id: recipient_hash,
             amount,
+            sender_nonce,
             allowance_remaining: sender_allowance.remaining,
             tip_id,
             fee_vault: fee_vault.key(),
@@ -324,7 +396,7 @@ pub mod tipcoin {
         let vault_bump = ctx.bumps.vault;
         let vault_seeds: [&[u8]; 3] = [
             b"vault",
-            ctx.accounts.vault.hashed_discord_id.as_ref(),
+            ctx.accounts.vault.hashed_user_id.as_ref(),
             &[vault_bump],
         ];
         let signer_seeds: [&[&[u8]]; 1] = [&vault_seeds];
@@ -347,7 +419,7 @@ pub mod tipcoin {
             authority: ctx.accounts.authority.key(),
             vault: ctx.accounts.vault.key(),
             vault_bump,
-            hashed_discord_id: ctx.accounts.vault.hashed_discord_id,
+            hashed_user_id: ctx.accounts.vault.hashed_user_id,
             destination: ctx.accounts.destination_token_account.owner,
             destination_token_account: ctx.accounts.destination_token_account.key(),
             amount,
@@ -366,8 +438,7 @@ pub mod tipcoin {
 
         let fee_vault_bump = ctx.accounts.fee_vault.bump;
         let config_key = ctx.accounts.config.key();
-        let fee_vault_seeds: [&[u8]; 3] =
-            [b"fee_vault", config_key.as_ref(), &[fee_vault_bump]];
+        let fee_vault_seeds: [&[u8]; 3] = [b"fee_vault", config_key.as_ref(), &[fee_vault_bump]];
         let signer_seeds: [&[&[u8]]; 1] = [&fee_vault_seeds];
 
         let cpi_accounts = Transfer {
@@ -388,6 +459,7 @@ pub mod tipcoin {
     }
 
     pub fn set_relayer(ctx: Context<SetRelayer>, new_relayer: Pubkey) -> Result<()> {
+        require!(new_relayer != Pubkey::default(), TipError::InvalidRelayer);
         ctx.accounts.config.relayer = new_relayer;
         Ok(())
     }
@@ -397,6 +469,18 @@ pub mod tipcoin {
         ctx.accounts.config.fee_bps = fee_bps;
         Ok(())
     }
+
+    pub fn set_claim_authority(
+        ctx: Context<SetClaimAuthority>,
+        new_claim_authority: Pubkey,
+    ) -> Result<()> {
+        require!(
+            new_claim_authority != Pubkey::default(),
+            TipError::InvalidClaimAuthority
+        );
+        ctx.accounts.config.claim_authority = new_claim_authority;
+        Ok(())
+    }
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize)]
@@ -404,12 +488,19 @@ pub struct InitializeConfigArgs {
     pub relayer: Pubkey,
     pub token_mint: Pubkey,
     pub fee_bps: u16,
+    pub claim_authority: Pubkey,
 }
 
 #[derive(Accounts)]
 pub struct InitializeConfig<'info> {
     #[account(mut)]
     pub upgrade_authority: Signer<'info>,
+    /// CHECK: Verified as the deployed Tipcoin program
+    #[account(address = crate::ID)]
+    pub program: AccountInfo<'info>,
+    /// CHECK: Must be the ProgramData account for `program`
+    #[account(mut)]
+    pub program_data: AccountInfo<'info>,
     #[account(
         init,
         payer = upgrade_authority,
@@ -422,21 +513,24 @@ pub struct InitializeConfig<'info> {
 }
 
 #[derive(Accounts)]
-#[instruction(hashed_discord_id: [u8; 32])]
-pub struct Register<'info> {
+#[instruction(hashed_user_id: [u8; 32])]
+pub struct ClaimVault<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
+    #[account(mut)]
+    pub claim_authority: Signer<'info>,
     #[account(
         seeds = [b"config"],
         bump,
-        constraint = config.token_mint != Pubkey::default() @ TipError::InvalidTokenMint
+        constraint = config.token_mint != Pubkey::default() @ TipError::InvalidTokenMint,
+        constraint = config.claim_authority != Pubkey::default() @ TipError::InvalidClaimAuthority
     )]
     pub config: Account<'info, Config>,
     #[account(
         init_if_needed,
         payer = authority,
         space = Vault::SPACE,
-        seeds = [b"vault", hashed_discord_id.as_ref()],
+        seeds = [b"vault", hashed_user_id.as_ref()],
         bump
     )]
     pub vault: Account<'info, Vault>,
@@ -444,7 +538,7 @@ pub struct Register<'info> {
         init_if_needed,
         payer = authority,
         space = Allowance::SPACE,
-        seeds = [b"allowance", hashed_discord_id.as_ref()],
+        seeds = [b"allowance", hashed_user_id.as_ref()],
         bump
     )]
     pub allowance: Account<'info, Allowance>,
@@ -463,7 +557,7 @@ pub struct Deposit<'info> {
     pub authority: Signer<'info>,
     #[account(
         mut,
-        seeds = [b"vault", vault.hashed_discord_id.as_ref()],
+        seeds = [b"vault", vault.hashed_user_id.as_ref()],
         bump,
         has_one = authority
     )]
@@ -488,7 +582,7 @@ pub struct ApproveAllowance<'info> {
     pub authority: Signer<'info>,
     #[account(
         mut,
-        seeds = [b"allowance", allowance.hashed_discord_id.as_ref()],
+        seeds = [b"allowance", allowance.hashed_user_id.as_ref()],
         bump,
         has_one = authority
     )]
@@ -500,7 +594,7 @@ pub struct RevokeAllowance<'info> {
     pub authority: Signer<'info>,
     #[account(
         mut,
-        seeds = [b"allowance", allowance.hashed_discord_id.as_ref()],
+        seeds = [b"allowance", allowance.hashed_user_id.as_ref()],
         bump,
         has_one = authority
     )]
@@ -511,8 +605,9 @@ pub struct RevokeAllowance<'info> {
 #[instruction(
     amount: u64,
     tip_id: [u8; 32],
+    sender_nonce: u64,
     memo: Option<String>,
-    recipient_hashed_discord_id: [u8; 32]
+    recipient_hashed_user_id: [u8; 32]
 )]
 pub struct Tip<'info> {
     #[account(mut, seeds = [b"config"], bump)]
@@ -521,13 +616,13 @@ pub struct Tip<'info> {
     pub relayer: Signer<'info>,
     #[account(
         mut,
-        seeds = [b"vault", sender_vault.hashed_discord_id.as_ref()],
+        seeds = [b"vault", sender_vault.hashed_user_id.as_ref()],
         bump
     )]
     pub sender_vault: Account<'info, Vault>,
     #[account(
         mut,
-        seeds = [b"allowance", sender_allowance.hashed_discord_id.as_ref()],
+        seeds = [b"allowance", sender_allowance.hashed_user_id.as_ref()],
         bump
     )]
     pub sender_allowance: Account<'info, Allowance>,
@@ -535,7 +630,7 @@ pub struct Tip<'info> {
         init_if_needed,
         payer = relayer,
         space = Vault::SPACE,
-        seeds = [b"vault", recipient_hashed_discord_id.as_ref()],
+        seeds = [b"vault", recipient_hashed_user_id.as_ref()],
         bump
     )]
     pub recipient_vault: Account<'info, Vault>,
@@ -577,7 +672,7 @@ pub struct Withdraw<'info> {
     pub authority: Signer<'info>,
     #[account(
         mut,
-        seeds = [b"vault", vault.hashed_discord_id.as_ref()],
+        seeds = [b"vault", vault.hashed_user_id.as_ref()],
         bump,
         has_one = authority
     )]
@@ -652,27 +747,41 @@ pub struct SetFeeRate<'info> {
     pub upgrade_authority: Signer<'info>,
 }
 
+#[derive(Accounts)]
+pub struct SetClaimAuthority<'info> {
+    #[account(
+        mut,
+        seeds = [b"config"],
+        bump,
+        has_one = upgrade_authority @ TipError::InvalidAuthority
+    )]
+    pub config: Account<'info, Config>,
+    pub upgrade_authority: Signer<'info>,
+}
+
 #[account]
 pub struct Config {
     pub upgrade_authority: Pubkey,
     pub relayer: Pubkey,
     pub token_mint: Pubkey,
     pub fee_bps: u16,
+    pub claim_authority: Pubkey,
 }
 
 impl Config {
-    pub const SPACE: usize = 8 + 32 + 32 + 32 + 2;
+    pub const SPACE: usize = 8 + 32 + 32 + 32 + 2 + 32;
 }
 
 #[account]
 pub struct Vault {
     pub authority: Pubkey,
-    pub hashed_discord_id: [u8; 32],
+    pub hashed_user_id: [u8; 32],
     pub token_mint: Pubkey,
+    pub claimed: bool,
 }
 
 impl Vault {
-    pub const SPACE: usize = 8 + 32 + 32 + 32;
+    pub const SPACE: usize = 8 + 32 + 32 + 32 + 1;
 }
 
 #[account]
@@ -689,7 +798,7 @@ impl FeeVault {
 #[account]
 pub struct Allowance {
     pub authority: Pubkey,
-    pub hashed_discord_id: [u8; 32],
+    pub hashed_user_id: [u8; 32],
     pub cap: u64,
     pub remaining: u64,
 }
@@ -719,12 +828,65 @@ fn calculate_fee(amount: u64, fee_bps: u16) -> Result<u64> {
     Ok(fee as u64)
 }
 
+fn unclaimed_authority_key(program_id: &Pubkey) -> Pubkey {
+    let (key, _) = Pubkey::find_program_address(&[UNCLAIMED_AUTHORITY_SEED], program_id);
+    key
+}
+
+fn assert_is_program_upgrade_authority(
+    program: &AccountInfo,
+    program_data: &AccountInfo,
+    upgrade_authority: &Signer,
+) -> Result<()> {
+    let program_key = program.key();
+    require_keys_eq!(program_key, crate::ID, TipError::InvalidProgram);
+    require_keys_eq!(
+        *program.owner,
+        bpf_loader_upgradeable::ID,
+        TipError::InvalidProgram
+    );
+
+    let (expected_program_data, _) =
+        Pubkey::find_program_address(&[program_key.as_ref()], &bpf_loader_upgradeable::ID);
+    require_keys_eq!(
+        program_data.key(),
+        expected_program_data,
+        TipError::InvalidProgramData
+    );
+    require_keys_eq!(
+        *program_data.owner,
+        bpf_loader_upgradeable::ID,
+        TipError::InvalidProgramData
+    );
+
+    let data = program_data
+        .try_borrow_data()
+        .map_err(|_| TipError::InvalidProgramData)?;
+    let state: UpgradeableLoaderState =
+        deserialize(&data).map_err(|_| TipError::InvalidProgramData)?;
+
+    match state {
+        UpgradeableLoaderState::ProgramData {
+            upgrade_authority_address,
+            ..
+        } => {
+            let stored = upgrade_authority_address.ok_or(TipError::MissingUpgradeAuthority)?;
+            require_keys_eq!(stored, upgrade_authority.key(), TipError::InvalidAuthority);
+        }
+        _ => return Err(TipError::InvalidProgramData.into()),
+    }
+
+    Ok(())
+}
+
 #[error_code]
 pub enum TipError {
     #[msg("Invalid relayer authority")]
     InvalidRelayer,
     #[msg("Invalid upgrade authority")]
     InvalidAuthority,
+    #[msg("Invalid claim authority")]
+    InvalidClaimAuthority,
     #[msg("Vault authority does not match signer")]
     InvalidVaultAuthority,
     #[msg("Token mint mismatch")]
@@ -735,22 +897,40 @@ pub enum TipError {
     InvalidFeeVault,
     #[msg("Deposit amount must be greater than zero")]
     InvalidDepositAmount,
-    #[msg("Invalid hashed Discord identifier")]
-    InvalidHashedDiscordId,
+    #[msg("Invalid hashed user identifier")]
+    InvalidHashedUserId,
     #[msg("Tip amount must be greater than zero")]
     InvalidTipAmount,
     #[msg("Allowance remaining is insufficient for this tip")]
     AllowanceExceeded,
-    #[msg("Sender hashed Discord account mismatch")]
+    #[msg("Sender hashed user account mismatch")]
     InvalidSenderPda,
-    #[msg("Recipient hashed Discord account mismatch")]
+    #[msg("Recipient hashed user account mismatch")]
     InvalidRecipientPda,
+    #[msg("Allowance hashed user account mismatch")]
+    InvalidAllowancePda,
+    #[msg("Vault has already been claimed")]
+    VaultAlreadyClaimed,
     #[msg("Withdraw amount must be greater than zero")]
     InvalidWithdrawAmount,
     #[msg("Vault balance is insufficient for withdrawal")]
     InsufficientVaultBalance,
     #[msg("Fee calculation overflowed")]
     FeeCalculationOverflow,
+    #[msg("Invalid program account provided")]
+    InvalidProgram,
+    #[msg("Invalid program data account provided")]
+    InvalidProgramData,
+    #[msg("Program is missing an upgrade authority")]
+    MissingUpgradeAuthority,
+}
+
+#[event]
+pub struct VaultClaimed {
+    pub authority: Pubkey,
+    pub claim_authority: Pubkey,
+    pub vault: Pubkey,
+    pub hashed_user_id: [u8; 32],
 }
 
 #[event]
@@ -758,7 +938,7 @@ pub struct DepositEvent {
     pub authority: Pubkey,
     pub vault: Pubkey,
     pub vault_bump: u8,
-    pub hashed_discord_id: [u8; 32],
+    pub hashed_user_id: [u8; 32],
     pub amount: u64,
 }
 
@@ -767,7 +947,7 @@ pub struct AllowanceUpdated {
     pub authority: Pubkey,
     pub vault: Pubkey,
     pub vault_bump: u8,
-    pub hashed_discord_id: [u8; 32],
+    pub hashed_user_id: [u8; 32],
     pub cap: u64,
     pub remaining: u64,
 }
@@ -779,9 +959,10 @@ pub struct TipEvent {
     pub sender_vault_bump: u8,
     pub recipient_vault: Pubkey,
     pub recipient_vault_bump: u8,
-    pub sender_hashed_discord_id: [u8; 32],
-    pub recipient_hashed_discord_id: [u8; 32],
+    pub sender_hashed_user_id: [u8; 32],
+    pub recipient_hashed_user_id: [u8; 32],
     pub amount: u64,
+    pub sender_nonce: u64,
     pub allowance_remaining: u64,
     pub tip_id: [u8; 32],
     pub fee_vault: Pubkey,
@@ -796,7 +977,7 @@ pub struct WithdrawEvent {
     pub authority: Pubkey,
     pub vault: Pubkey,
     pub vault_bump: u8,
-    pub hashed_discord_id: [u8; 32],
+    pub hashed_user_id: [u8; 32],
     pub destination: Pubkey,
     pub destination_token_account: Pubkey,
     pub amount: u64,

@@ -95,7 +95,7 @@ diff-checking `target/idl` against the committed `idl/` directory.
 ## Key accounts & events
 
 - `Config` PDA stores upgrade authority, relayer, SPL mint, and fee settings.
-- `Vault` PDAs hold user funds (seed: `["vault", hashed_discord_id]`).
+- `Vault` PDAs hold user funds (seed: `["vault", hashed_user_id]`).
 - `Allowance` PDAs control per-user delegated spend caps.
 - `FeeVault` PDA escrows protocol fees (seed: `["fee_vault", config]`).
 - Events: `DepositEvent`, `AllowanceUpdated`, `TipEvent`, `WithdrawEvent`, plus
