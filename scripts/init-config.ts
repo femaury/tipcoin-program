@@ -13,8 +13,8 @@ const BPF_LOADER_UPGRADEABLE_PROGRAM_ID = new PublicKey(
 async function main() {
   const PROGRAM_ID = new PublicKey(process.env.PROGRAM_ID!);
   const TOKEN_MINT = new PublicKey(process.env.TOKEN_MINT_ADDRESS!);
-  const RELAYER = new PublicKey(process.env.RELAYER_AUTHORITY!);
-  const CLAIM_AUTHORITY = new PublicKey(process.env.CLAIM_AUTHORITY!);
+  const RELAYER = new PublicKey(process.env.RELAYER_PUBKEY!);
+  const CLAIM_AUTHORITY = new PublicKey(process.env.CLAIM_AUTHORITY_PUBKEY!);
   const feeBpsEnv = process.env.FEE_BPS ?? '0';
   const FEE_BPS = Number.parseInt(feeBpsEnv, 10);
 
