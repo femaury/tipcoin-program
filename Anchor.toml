@@ -2,10 +2,10 @@
 seeds = true
 
 [programs.localnet]
-tipcoin = "4E9E74RpVCrtJXt7uaMYxVU1VG2yJBdvDYctGVcYRpGY"
+tipcoin = "BRTHhxE55gYbzhHtCaaRd6ngGL6j3pJHD4Pn4nBwJweh"
 
 [programs.devnet]
-tipcoin = "4E9E74RpVCrtJXt7uaMYxVU1VG2yJBdvDYctGVcYRpGY"
+tipcoin = "BRTHhxE55gYbzhHtCaaRd6ngGL6j3pJHD4Pn4nBwJweh"
 
 [registry]
 url = "https://api.apr.dev"

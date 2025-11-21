@@ -6,7 +6,7 @@ use bincode::deserialize;
 const MAX_FEE_BPS: u16 = 100;
 const UNCLAIMED_AUTHORITY_SEED: &[u8] = b"unclaimed_authority";
 
-declare_id!("4E9E74RpVCrtJXt7uaMYxVU1VG2yJBdvDYctGVcYRpGY");
+declare_id!("BRTHhxE55gYbzhHtCaaRd6ngGL6j3pJHD4Pn4nBwJweh");
 
 #[program]
 pub mod tipcoin {

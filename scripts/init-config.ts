@@ -6,10 +6,15 @@ import { PublicKey, SystemProgram } from '@solana/web3.js';
 import idl from '../target/idl/tipcoin.json' with { type: 'json' };
 import { Tipcoin } from '../target/types/tipcoin.ts';
 
+const BPF_LOADER_UPGRADEABLE_PROGRAM_ID = new PublicKey(
+  'BPFLoaderUpgradeab1e11111111111111111111111',
+);
+
 async function main() {
   const PROGRAM_ID = new PublicKey(process.env.PROGRAM_ID!);
   const TOKEN_MINT = new PublicKey(process.env.TOKEN_MINT_ADDRESS!);
   const RELAYER = new PublicKey(process.env.RELAYER_AUTHORITY!);
+  const CLAIM_AUTHORITY = new PublicKey(process.env.CLAIM_AUTHORITY!);
   const feeBpsEnv = process.env.FEE_BPS ?? '0';
   const FEE_BPS = Number.parseInt(feeBpsEnv, 10);
 
@@ -26,12 +31,23 @@ async function main() {
   } as anchor.Idl;
   const program = new anchor.Program(programIdl, provider) as Program<Tipcoin>;
   const [configPda] = PublicKey.findProgramAddressSync([Buffer.from('config')], PROGRAM_ID);
+  const [programDataPda] = PublicKey.findProgramAddressSync(
+    [PROGRAM_ID.toBuffer()],
+    BPF_LOADER_UPGRADEABLE_PROGRAM_ID,
+  );
 
   console.log('Config PDA:', configPda.toBase58());
 
   await program.methods
-    .initializeConfig({ relayer: RELAYER, tokenMint: TOKEN_MINT, feeBps: FEE_BPS })
+    .initializeConfig({
+      relayer: RELAYER,
+      tokenMint: TOKEN_MINT,
+      feeBps: FEE_BPS,
+      claimAuthority: CLAIM_AUTHORITY,
+    })
     .accountsPartial({
+      program: PROGRAM_ID,
+      programData: programDataPda,
       upgradeAuthority: provider.wallet.publicKey,
       config: configPda,
       systemProgram: SystemProgram.programId,
